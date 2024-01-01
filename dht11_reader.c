@@ -33,6 +33,19 @@ struct timespec timespec_diff(
     return result;
 }
 
+void cleanup(
+  struct gpiod_chip *chip,
+  struct gpiod_line * line,
+  struct gpiod_line_event *events 
+) {
+  if (events != NULL) {
+    free(events);
+    events = NULL;
+  }
+  gpiod_line_release(line);
+  gpiod_chip_close(chip);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -44,7 +57,9 @@ main(int argc, char *argv[])
   if(!chip)
   {
     perror("gpiod_chip_open");
-    goto cleanup;
+    gpiod_chip_close(chip);
+    exit(EXIT_FAILURE);
+    // goto cleanup; // TODO: Remove
   }
 
   offset = 17;
