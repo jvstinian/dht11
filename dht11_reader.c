@@ -1,4 +1,4 @@
-// file input.c
+// file dht11_reader.c
 #include <gpiod.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -55,7 +55,7 @@ static void print_help(void)
         printf("Options:\n");
         printf("  -l, --line <offset>           line offset for the DHT11 signal              default: 17\n");
         printf("  -p, --hold-period <period>    time period to hold low to initiate sensor    default: 180\n");
-        printf("  -c, --chip <chip>             restrict scope to a particular chip           default: 0\n");
+        printf("  -c, --chip <number>           chip number                                   default: 0\n");
         printf("  -v, --verbose                 print info for debugging\n");
         printf("  -h, --help                    display this help and exit\n");
         print_period_help();
@@ -148,7 +148,6 @@ static int initialize_config(struct config *cfg) {
   cfg->line_offset = 17;
   cfg->hold_period_us = 180;
   cfg->verbose = false;
-  // cfg->chip_id = "0";
   cfg->chip_number = 0;
 }
 
@@ -221,7 +220,6 @@ int main(int argc, char *argv[])
   if (cfg.verbose) {
     printf("line offset: %d\n", cfg.line_offset);
     printf("hold period: %d\n", cfg.hold_period_us);
-    // printf("chip_id: %s\n", cfg.chip_id);
     printf("chip_number: %d\n", cfg.chip_number);
     printf("verbose: %d\n", cfg.verbose);
   }
@@ -240,7 +238,6 @@ int main(int argc, char *argv[])
   {
     perror("gpiod_chip_open");
     gpiod_chip_close(chip);
-    // free(device_chip_path);
     exit(EXIT_FAILURE);
   }
 
@@ -268,7 +265,7 @@ int main(int argc, char *argv[])
       fprintf(stdout, "Set line to output.\n");
   }
   // We set the pin to LOW for the hold period.
-  // The default is is 180 microseconds.
+  // The default is 180 microseconds.
   // Note that the documentation indicates that the LOW 
   // value should be maintained for 18 milliseconds, or 
   // 18000 microseconds.  However, we found that if we 
@@ -347,7 +344,6 @@ int main(int argc, char *argv[])
       printf("The data was read successfully.\n");
      }
   } else {
-    fprintf(stderr, "There was an error reading the data.\n");
     cleanup(chip, line, events);
     exit(EXIT_FAILURE);
   }
