@@ -167,11 +167,7 @@ static int parse_config(int argc, char **argv, struct config *cfg)
 
         int opti, optc;
 
-        for (;;) { // TODO: Switch to while loop
-                optc = getopt_long(argc, argv, shortopts, longopts, &opti);
-                if (optc < 0)
-                        break;
-
+        while ((optc = getopt_long(argc, argv, shortopts, longopts, &opti)) >= 0) {
                 switch (optc) {
                 case 'l':
                         cfg->line_offset = parse_line_or_die(optarg);
