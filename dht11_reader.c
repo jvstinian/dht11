@@ -35,6 +35,7 @@ struct config {
   unsigned int hold_period_us;
   bool verbose;
   unsigned int chip_number;
+  unsigned int event_count;
 };
 
 // The following is taken from 
@@ -143,12 +144,25 @@ unsigned int parse_chip_number_or_die(const char *option)
         return (unsigned int) chip_number;
 }
 
+unsigned int parse_event_count_or_die(const char *option)
+{
+        int event_count = atoi(option);
+
+        if (event_count < 80) {
+                fprintf(stderr, "event count must be >= 80, got %s", option);
+                exit(EXIT_FAILURE);
+        }
+
+        return (unsigned int) event_count;
+}
+
 static int initialize_config(struct config *cfg) {
   memset(cfg, 0, sizeof(*cfg));
   cfg->line_offset = 17;
   cfg->hold_period_us = 180;
   cfg->verbose = false;
   cfg->chip_number = 0;
+  cfg->event_count = 84;
 }
 
 static int parse_config(int argc, char **argv, struct config *cfg)
@@ -157,12 +171,13 @@ static int parse_config(int argc, char **argv, struct config *cfg)
                 { "line",         required_argument, NULL, 'l' },
                 { "hold-period",  required_argument, NULL, 'p' },
                 { "chip",         required_argument, NULL, 'c' },
+                { "event-count",  required_argument, NULL, 'e' },
                 { "verbose",            no_argument, NULL, 'v' },
                 { "help",               no_argument, NULL, 'h' },
                 { NULL,                           0, NULL,  0  },
         };
 
-        static const char *const shortopts = "l:p:c:vh";
+        static const char *const shortopts = "l:p:c:e:vh";
 
         int opti, optc;
 
@@ -176,6 +191,9 @@ static int parse_config(int argc, char **argv, struct config *cfg)
                         break;
                 case 'c':
                         cfg->chip_number = parse_chip_number_or_die(optarg);
+                        break;
+                case 'e':
+                        cfg->event_count = parse_event_count_or_die(optarg);
                         break;
                 case 'v':
                         cfg->verbose = true;
@@ -221,6 +239,7 @@ int main(int argc, char *argv[])
     printf("line offset: %d\n", cfg.line_offset);
     printf("hold period: %d\n", cfg.hold_period_us);
     printf("chip_number: %d\n", cfg.chip_number);
+    printf("event_count: %d\n", cfg.event_count);
     printf("verbose: %d\n", cfg.verbose);
   }
 
@@ -230,7 +249,7 @@ int main(int argc, char *argv[])
   
   struct gpiod_chip *chip;
   struct gpiod_line * line = NULL;
-  int total_events = 84;
+  int total_events = cfg.event_count; // 84;
   struct gpiod_line_event *events = (struct gpiod_line_event*) malloc(total_events * sizeof(struct gpiod_line_event));
 
   chip = gpiod_chip_open_by_number(cfg.chip_number);
@@ -280,6 +299,8 @@ int main(int argc, char *argv[])
   // be pulled to HIGH.  
   // For this reason we do not currently explicitly set the pin 
   // value to HIGH.  This appears to work.
+  // gpiod_line_set_value(line, highval);
+  // usleep(20);
   gpiod_line_release(line);
 
   // We request to read both (i.e., falling and rising) edge events
@@ -356,12 +377,19 @@ int main(int argc, char *argv[])
   time_t now = time(NULL);
 
   int one_usec_lb = (24 + 70) / 2;
-  int base_idx = 4;
+  int base_idx = total_events - 80; // the last 40 falling events
+  int usecdiff;
   for (int val_idx = 0; val_idx < 5; val_idx++) {
     for (int bit_idx = 0; bit_idx < 8; bit_idx++) {
       int target_idx = base_idx + 2 * 8 * val_idx + 2 * bit_idx ;
-      struct timespec tdiff = timespec_diff(&(events[target_idx-1].ts), &(events[target_idx].ts));
-      int usecdiff = (int) (tdiff.tv_nsec / 1000);
+      if (target_idx > 0) {
+        struct timespec tdiff = timespec_diff(&(events[target_idx-1].ts), &(events[target_idx].ts));
+        usecdiff = (int) (tdiff.tv_nsec / 1000);
+      } else { 
+	// This should only apply for the first bit, which is the largest bit for humidity, 
+	// which should be zero
+	usecdiff = 0;
+      }
       vals[val_idx] <<= 1;
       if (usecdiff > one_usec_lb) {
         vals[val_idx] |= 1u;
