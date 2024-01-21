@@ -249,7 +249,7 @@ int main(int argc, char *argv[])
   
   struct gpiod_chip *chip;
   struct gpiod_line * line = NULL;
-  int total_events = cfg.event_count; // 84;
+  int total_events = cfg.event_count;
   struct gpiod_line_event *events = (struct gpiod_line_event*) malloc(total_events * sizeof(struct gpiod_line_event));
 
   chip = gpiod_chip_open_by_number(cfg.chip_number);
@@ -299,8 +299,6 @@ int main(int argc, char *argv[])
   // be pulled to HIGH.  
   // For this reason we do not currently explicitly set the pin 
   // value to HIGH.  This appears to work.
-  // gpiod_line_set_value(line, highval);
-  // usleep(20);
   gpiod_line_release(line);
 
   // We request to read both (i.e., falling and rising) edge events
