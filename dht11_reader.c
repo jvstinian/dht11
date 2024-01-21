@@ -2,14 +2,11 @@
 #include <gpiod.h>
 #include <stdio.h>
 #include <unistd.h>
-/*
-#include <error.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
-*/
+#include <limits.h>
+#include "getopt.h"
 
-struct gpiod_chip *chip;
+static const char *prog_name = "dht11_reader";
 
 /* timespec_diff is a method for taking the 
  * difference between two timespecs.  
@@ -17,8 +14,8 @@ struct gpiod_chip *chip;
  * otherwise the resulting timespec will not be valid.
  */
 struct timespec timespec_diff(
-	struct timespec *start, 
-	struct timespec *stop
+  struct timespec *start, 
+  struct timespec *stop
 )
 {
     struct timespec result;
@@ -33,6 +30,178 @@ struct timespec timespec_diff(
     return result;
 }
 
+struct config {
+  unsigned int line_offset;
+  unsigned int hold_period_us;
+  bool verbose;
+  unsigned int chip_number;
+};
+
+// The following is taken from 
+// https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/tree/tools/tools-common.c
+void print_period_help(void)
+{
+        printf("\nPeriods:\n");
+        printf("    Periods are taken as milliseconds unless units are specified. e.g. 10us.\n");
+        printf("    Supported units are 's', 'ms', and 'us'.\n");
+}
+
+static void print_help(void)
+{
+        printf("Usage: %s [OPTIONS] \n", prog_name);
+        printf("\n");
+        printf("Read DHT11 sensor.\n");
+        printf("\n");
+        printf("Options:\n");
+        printf("  -l, --line <offset>           line offset for the DHT11 signal              default: 17\n");
+        printf("  -p, --hold-period <period>    time period to hold low to initiate sensor    default: 180\n");
+        printf("  -c, --chip <chip>             restrict scope to a particular chip           default: 0\n");
+        printf("  -v, --verbose                 print info for debugging\n");
+        printf("  -h, --help                    display this help and exit\n");
+        print_period_help();
+        printf("\n");
+}
+
+// The following is taken from 
+// https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/tree/tools/tools-common.c
+unsigned int parse_period(const char *option)
+{
+        unsigned long p, m = 0;
+        char *end;
+
+        p = strtoul(option, &end, 10);
+
+        switch (*end) {
+        case 'u':
+                m = 1;
+                end++;
+                break;
+        case 'm':
+                m = 1000;
+                end++;
+                break;
+        case 's':
+                m = 1000000;
+                break;
+        case '\0':
+                break;
+        default:
+                return -1;
+        }
+
+        if (m) {
+                if (*end != 's')
+                        return -1;
+
+                end++;
+        } else {
+                m = 1000;
+        }
+
+        p *= m;
+        if (*end != '\0' || p > INT_MAX)
+                return -1;
+
+        return p;
+}
+
+// The following is taken from 
+// https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/tree/tools/tools-common.c
+unsigned int parse_period_or_die(const char *option)
+{
+        int period = parse_period(option);
+
+        if (period < 0) {
+                fprintf(stderr, "invalid period: %s", option);
+                exit(EXIT_FAILURE);
+        }
+
+        return period;
+}
+
+unsigned int parse_line_or_die(const char *option)
+{
+        int line = atoi(option);
+
+        if (line <= 0) {
+                fprintf(stderr, "invalid line: %s", option);
+                exit(EXIT_FAILURE);
+        }
+
+        return (unsigned int) line;
+}
+
+unsigned int parse_chip_number_or_die(const char *option)
+{
+        int chip_number = atoi(option);
+
+        if (chip_number <= 0) {
+                fprintf(stderr, "invalid chip number: %s", option);
+                exit(EXIT_FAILURE);
+        }
+
+        return (unsigned int) chip_number;
+}
+
+static int initialize_config(struct config *cfg) {
+  memset(cfg, 0, sizeof(*cfg));
+  cfg->line_offset = 17;
+  cfg->hold_period_us = 180;
+  cfg->verbose = false;
+  // cfg->chip_id = "0";
+  cfg->chip_number = 0;
+}
+
+static int parse_config(int argc, char **argv, struct config *cfg)
+{
+        static const struct option longopts[] = {
+                { "line",         required_argument, NULL, 'l' },
+                { "hold-period",  required_argument, NULL, 'p' },
+                { "chip",         required_argument, NULL, 'c' },
+                { "verbose",            no_argument, NULL, 'v' },
+                { "help",               no_argument, NULL, 'h' },
+                { NULL,                           0, NULL,  0  },
+        };
+
+        static const char *const shortopts = "l:p:c:vh";
+
+        int opti, optc;
+
+        for (;;) { // TODO: Switch to while loop
+                optc = getopt_long(argc, argv, shortopts, longopts, &opti);
+                if (optc < 0)
+                        break;
+
+                switch (optc) {
+                case 'l':
+                        cfg->line_offset = parse_line_or_die(optarg);
+                        break;
+                case 'p':
+                        cfg->hold_period_us = parse_period_or_die(optarg);
+                        break;
+                case 'c':
+                        cfg->chip_number = parse_chip_number_or_die(optarg);
+                        break;
+                case 'v':
+                        cfg->verbose = true;
+                        break;
+                case 'h':
+                        print_help();
+                        exit(EXIT_SUCCESS);
+                case 0:
+                        break;
+                case '?':
+                        fprintf(stderr, "try %s --help", prog_name);
+                        exit(EXIT_FAILURE);
+                default:
+                        fprintf(stderr, "encountered unexpected issue parsing options, try %s --help", prog_name);
+                        exit(EXIT_FAILURE);
+                }
+        }
+
+        return optind;
+}
+
 void cleanup(
   struct gpiod_chip *chip,
   struct gpiod_line * line,
@@ -42,53 +211,68 @@ void cleanup(
     free(events);
     events = NULL;
   }
-  gpiod_line_release(line);
+  if (line != NULL)
+    gpiod_line_release(line);
   gpiod_chip_close(chip);
 }
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
-  unsigned int offset;
+  struct config cfg;
+  
+  initialize_config(&cfg);
+  parse_config(argc, argv, &cfg);
+  if (cfg.verbose) {
+    printf("line offset: %d\n", cfg.line_offset);
+    printf("hold period: %d\n", cfg.hold_period_us);
+    // printf("chip_id: %s\n", cfg.chip_id);
+    printf("chip_number: %d\n", cfg.chip_number);
+    printf("verbose: %d\n", cfg.verbose);
+  }
+
+  unsigned int offset = cfg.line_offset;
 
   int err;
+  
+  struct gpiod_chip *chip;
+  struct gpiod_line * line = NULL;
+  int total_events = 84;
+  struct gpiod_line_event *events = (struct gpiod_line_event*) malloc(total_events * sizeof(struct gpiod_line_event));
 
-  chip = gpiod_chip_open("/dev/gpiochip0");
+  chip = gpiod_chip_open_by_number(cfg.chip_number);
   if(!chip)
   {
     perror("gpiod_chip_open");
     gpiod_chip_close(chip);
+    // free(device_chip_path);
     exit(EXIT_FAILURE);
-    // goto cleanup; // TODO: Remove
   }
 
-  offset = 17;
-	
-  struct gpiod_line * line;
   line = gpiod_chip_get_line(chip, offset);
   if(line == NULL)
   {
     perror("gpiod_chip_get_line");
-    goto cleanup;
+    cleanup(chip, line, events);
+    exit(EXIT_FAILURE);
   }
 
-  int total_events = 84;
-  struct gpiod_line_event *events = (struct gpiod_line_event*) malloc(total_events * sizeof(struct gpiod_line_event));
-
-  int highval = 1; 
-  int lowval = 0;
+  const int highval = 1; 
+  const int lowval = 0;
   // We request to use the line for output, and set the value to HIGH
   err = gpiod_line_request_output(line, "initialize-reading", highval);
   if(err == -1)
   {
     perror("gpiod_line_request_output");
-    goto cleanup; // TODO: Check this
+    cleanup(chip, line, events);
+    exit(EXIT_FAILURE);
   }
   else if(err == 0)
   {
-    fprintf(stdout, "Set line to output.");
+    if (cfg.verbose) 
+      fprintf(stdout, "Set line to output.\n");
   }
-  // We set the pin to LOW for 180 microseconds.
+  // We set the pin to LOW for the hold period.
+  // The default is is 180 microseconds.
   // Note that the documentation indicates that the LOW 
   // value should be maintained for 18 milliseconds, or 
   // 18000 microseconds.  However, we found that if we 
@@ -96,7 +280,7 @@ main(int argc, char *argv[])
   // values which we missed.  We found that we received the 
   // expected signals if we set the pin to LOW for 180 microseconds.
   gpiod_line_set_value(line, lowval);
-  usleep(180);
+  usleep(cfg.hold_period_us);
   // The documentation says to set the pin value to HIGH before 
   // switching to input, however we are under the impression that 
   // on releasing the output request that the pin will automatically 
@@ -110,12 +294,13 @@ main(int argc, char *argv[])
   if(err == -1)
   {
     perror("gpiod_line_request_both_edges_events");
-    goto cleanup; // TODO: Check this
+    cleanup(chip, line, events);
+    exit(EXIT_FAILURE);
   }
   else 
   {
-    // TODO: Consider printing the following if verbosity is set
-    // fprintf(stdout, "Setting up line request for both edges events, return %d", err);
+    if (cfg.verbose) 
+      fprintf(stdout, "Setting up line request for both edges events, return %d\n", err);
   }
 
   int num_events = 0;
@@ -128,24 +313,26 @@ main(int argc, char *argv[])
     if(err == -1)
     {
       perror("gpiod_line_event_read_multiple");
-      goto cleanup; // TODO: Check this
-    }
-    else 
-    {
-      // fprintf(stdout, "\nRead events, return %d", err);
+      cleanup(chip, line, events);
+      exit(EXIT_FAILURE);
     }
     num_events += err;
     eventsptr += err;
   }
 
-  for (int idx = 0; idx < num_events; idx++) {
-	  fprintf(stdout, "\nEvent type: %d, time %lld.%.9ld", events[idx].event_type, (long long) events[idx].ts.tv_sec, events[idx].ts.tv_nsec);
-	  if (idx > 0) {
-		struct timespec tdiff = timespec_diff(&(events[idx-1].ts), &(events[idx].ts));
-	  	fprintf(stdout, ", time diff %lld.%.9ld", (long long) tdiff.tv_sec, tdiff.tv_nsec);
-		unsigned int usecdiff = tdiff.tv_nsec / 1000;
-	  	fprintf(stdout, " or %.6u", usecdiff);
-	  }
+  if (cfg.verbose) {
+    for (int idx = 0; idx < num_events; idx++) {
+            fprintf(stdout, "Event type: %d, time %lld.%.9ld", events[idx].event_type, (long long) events[idx].ts.tv_sec, events[idx].ts.tv_nsec);
+            if (idx > 0) {
+              struct timespec tdiff = timespec_diff(&(events[idx-1].ts), &(events[idx].ts));
+              fprintf(stdout, ", time diff %lld.%.9ld", (long long) tdiff.tv_sec, tdiff.tv_nsec);
+              unsigned int usecdiff = tdiff.tv_nsec / 1000;
+              fprintf(stdout, " or %.6u", usecdiff);
+              fprintf(stdout, "\n");
+            } else {
+              fprintf(stdout, "\n");
+	    }
+    }
   }
   
   // performing checks
@@ -153,22 +340,28 @@ main(int argc, char *argv[])
   bool success = true;
   for (int idx = 0; idx < num_events; idx++) {
     if(events[idx].event_type != expected_val) { 
-      fprintf(stderr, "\nFor idx %d, got event type %d, expected %d", idx, events[idx].event_type, expected_val);
+      fprintf(stderr, "For idx %d, got event type %d, expected %d\n", idx, events[idx].event_type, expected_val);
       success = false;
       break;
     }
     expected_val = (expected_val == 1) ? 2 : 1;
   }
   if (success) { 
-    printf("\nThe data was read successfully.");
+    if (cfg.verbose) { 
+      printf("The data was read successfully.\n");
+     }
   } else {
-    fprintf(stderr, "\nThere was an error reading the data.");
+    fprintf(stderr, "There was an error reading the data.\n");
+    cleanup(chip, line, events);
+    exit(EXIT_FAILURE);
   }
 
   unsigned int vals[5];
   for (int idx = 0; idx < 5; idx++) {
     vals[idx] = 0u;
   }
+
+  time_t now = time(NULL);
 
   int one_usec_lb = (24 + 70) / 2;
   int base_idx = 4;
@@ -184,24 +377,31 @@ main(int argc, char *argv[])
     }
   }
 
-  free(events);
-
   // bit check
   if ((vals[0] + vals[1] + vals[2] + vals[3]) != vals[4]) {
-    fprintf(stderr, "\nThe bit check failed");
+    fprintf(stderr, "The bit check failed\n");
+    cleanup(chip, line, events);
+    exit(EXIT_FAILURE);
   } else {
-    printf("\nThe bit check succeeded");
+    if (cfg.verbose)
+      printf("The bit check succeeded\n");
   }
 
   float humidity = ((float) vals[0]) + 0.1 * ((float) vals[1]);
   float temperature = ((float) vals[2]) + 0.1 * ((float) vals[3]);
-  printf("\nHumidity: %f", humidity);
-  printf("\nTemperature: %f Celsius", temperature);
-  printf("\nTemperature: %f Fahrenheit", 1.8 * temperature + 32.0);
+  if (cfg.verbose) {
+    char timeiso8601[21];
+    strftime(timeiso8601, 21, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+    printf("Values: %d, %d, %d, %d\n", vals[0], vals[1], vals[2], vals[3]);
+    printf("Time: %s\n", timeiso8601);
+    printf("Humidity: %f\n", humidity);
+    printf("Temperature: %f Celsius\n", temperature);
+    printf("Temperature: %f Fahrenheit\n", 1.8 * temperature + 32.0);
+  } else {
+    printf("%ld,%f,%f\n", now, humidity, temperature);
+  }
 
-cleanup:
-  gpiod_line_release(line);
-  gpiod_chip_close(chip);
-
+  cleanup(chip, line, events);
   return EXIT_SUCCESS;
 }
+
